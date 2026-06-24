@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    
+    <!-- Premium Dark UI Theme Colors -->
+    <color name="bg_dark">#121214</color>
+    <color name="surface_dark_card">#1A1A1E</color>
+    <color name="surface_glass">#1AFFFFFF</color>
+    <color name="surface_glass_border">#20FFFFFF</color>
+    <color name="surface_glass_dark">#1C1E22</color>
+    <color name="surface_glass_dark_border">#2A2E35</color>
+    
+    <!-- Accents -->
+    <color name="primary_purple">#7C3AED</color>
+    <color name="secondary_cyan">#06B6D4</color>
+    
+    <!-- Status Colors -->
+    <color name="color_success">#10B981</color>
+    <color name="color_warning">#F59E0B</color>
+    <color name="color_danger">#EF4444</color>
+    
+    <!-- Text Colors -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_muted">#9CA3AF</color>
+</resources>

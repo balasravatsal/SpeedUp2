@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="72dp"
+    android:layout_height="72dp"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:focusable="false">
+
+    <!-- Pulsating ring container (animated in service) -->
+    <View
+        android:id="@+id/widget_pulse"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_gradient_primary_button"
+        android:alpha="0" />
+
+    <!-- Main Circular Button -->
+    <FrameLayout
+        android:id="@+id/widget_button"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_gradient_primary_button"
+        android:elevation="6dp">
+
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_zap"
+            android:contentDescription="Speed Up Logo" />
+    </FrameLayout>
+
+    <!-- Fit Score Badge -->
+    <TextView
+        android:id="@+id/widget_badge"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="4dp"
+        android:background="@drawable/bg_badge_success"
+        android:elevation="8dp"
+        android:gravity="center"
+        android:text="82"
+        android:textColor="@color/black"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+</FrameLayout>

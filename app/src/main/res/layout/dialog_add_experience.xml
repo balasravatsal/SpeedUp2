@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <EditText
+        android:id="@+id/et_dialog_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Job Title (e.g. Android Developer)"
+        android:inputType="textPersonName"
+        android:textColor="@color/white"
+        android:textColorHint="@color/text_muted"
+        android:layout_marginBottom="12dp" />
+
+    <EditText
+        android:id="@+id/et_dialog_company"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Company (e.g. Google)"
+        android:inputType="text"
+        android:textColor="@color/white"
+        android:textColorHint="@color/text_muted"
+        android:layout_marginBottom="12dp" />
+
+    <EditText
+        android:id="@+id/et_dialog_duration"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Duration (e.g. 2 years)"
+        android:inputType="text"
+        android:textColor="@color/white"
+        android:textColorHint="@color/text_muted" />
+
+</LinearLayout>

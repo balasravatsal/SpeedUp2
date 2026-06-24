@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <EditText
+        android:id="@+id/et_dialog_degree"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Degree (e.g. B.S. in Computer Science)"
+        android:inputType="text"
+        android:textColor="@color/white"
+        android:textColorHint="@color/text_muted"
+        android:layout_marginBottom="12dp" />
+
+    <EditText
+        android:id="@+id/et_dialog_school"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Institution (e.g. Stanford University)"
+        android:inputType="text"
+        android:textColor="@color/white"
+        android:textColorHint="@color/text_muted"
+        android:layout_marginBottom="12dp" />
+
+    <EditText
+        android:id="@+id/et_dialog_year"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Graduation Year (e.g. 2021)"
+        android:inputType="number"
+        android:textColor="@color/white"
+        android:textColorHint="@color/text_muted" />
+
+</LinearLayout>
