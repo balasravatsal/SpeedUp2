@@ -4,16 +4,7 @@
     android:id="@+id/preview_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#66000000"
-    android:clickable="true"
-    android:focusable="true">
-
-    <View
-        android:id="@+id/preview_dismiss_area"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:clickable="true"
-        android:focusable="true" />
+    android:background="#66000000">
 
     <LinearLayout
         android:id="@+id/preview_card"
@@ -21,22 +12,24 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:background="@drawable/bg_glass_card_dark"
+        android:clickable="true"
+        android:focusable="true"
         android:orientation="vertical"
         android:paddingHorizontal="24dp"
-        android:paddingBottom="32dp"
+        android:paddingBottom="24dp"
         android:paddingTop="12dp">
 
         <View
             android:layout_width="48dp"
             android:layout_height="4dp"
             android:layout_gravity="center_horizontal"
-            android:layout_marginBottom="24dp"
+            android:layout_marginBottom="16dp"
             android:background="#33FFFFFF" />
 
         <RelativeLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="20dp">
+            android:layout_marginBottom="16dp">
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -62,7 +55,7 @@
                         android:layout_height="wrap_content"
                         android:text="Ready to Fill"
                         android:textColor="@color/text_primary"
-                        android:textSize="20sp"
+                        android:textSize="18sp"
                         android:textStyle="bold" />
 
                     <TextView
@@ -87,56 +80,64 @@
                 app:tint="@color/text_muted" />
         </RelativeLayout>
 
-        <ScrollView
+        <androidx.core.widget.NestedScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:maxHeight="240dp"
+            android:overScrollMode="ifContentScrolls"
             android:scrollbars="vertical">
 
             <LinearLayout
-                android:id="@+id/preview_fields_container"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical" />
-        </ScrollView>
+                android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tv_missing_label"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            android:text="UNRECOGNIZED FIELDS"
-            android:textColor="@color/text_muted"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
+                <LinearLayout
+                    android:id="@+id/preview_fields_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
 
-        <LinearLayout
-            android:id="@+id/preview_missing_container"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="24dp"
-            android:orientation="vertical"
-            android:visibility="gone" />
+                <TextView
+                    android:id="@+id/tv_missing_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:layout_marginBottom="8dp"
+                    android:text="UNRECOGNIZED FIELDS"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/preview_missing_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:orientation="vertical"
+                    android:visibility="gone" />
+
+            </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
 
         <Button
             android:id="@+id/btn_fill_all"
             android:layout_width="match_parent"
-            android:layout_height="54dp"
-            android:layout_marginBottom="12dp"
+            android:layout_height="50dp"
+            android:layout_marginTop="12dp"
             android:background="@drawable/bg_gradient_primary_button"
             android:backgroundTint="@null"
             android:text="Fill All Fields"
             android:textColor="@color/white"
-            android:textSize="16sp"
+            android:textSize="15sp"
             android:textStyle="bold" />
 
         <Button
             android:id="@+id/btn_fill_selected"
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="match_parent"
-            android:layout_height="54dp"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
             android:text="Fill Matched Fields"
             android:textColor="@color/primary_purple"
             app:strokeColor="@color/primary_purple"

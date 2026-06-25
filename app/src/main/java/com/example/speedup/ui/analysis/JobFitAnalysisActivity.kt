@@ -79,17 +79,25 @@ class JobFitAnalysisActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             val appContext = applicationContext
+            val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
             Toast.makeText(this, "Returning to job form to auto-fill…", Toast.LENGTH_SHORT).show()
             finish()
-            window.decorView.postDelayed({
-                val repository = ProfileRepository(appContext)
-                val result = accessibility.performAutoFill(repository)
-                val message = when {
-                    result.filledCount > 0 -> "Auto-filled ${result.filledCount} field(s) from your profile"
-                    result.totalDetected == 0 -> "No form fields found. Open a job application form first."
-                    else -> "Found ${result.fillable.size} fields but couldn't fill them. Tap a field and retry."
-                }
-                Toast.makeText(appContext, message, Toast.LENGTH_LONG).show()
+            // performAutoFill blocks (sleeps + dispatches tap gestures whose
+            // callbacks run on the main thread). It MUST run off the main thread,
+            // otherwise the gesture latch never completes and the UI stalls/ANRs.
+            mainHandler.postDelayed({
+                Thread {
+                    val repository = ProfileRepository(appContext)
+                    val result = accessibility.performAutoFill(repository)
+                    val message = when {
+                        result.filledCount > 0 -> "Auto-filled ${result.filledCount} field(s) from your profile"
+                        result.totalDetected == 0 -> "No form fields found. Open a job application form first."
+                        else -> "Found ${result.fillable.size} fields but couldn't fill them. Tap a field and retry."
+                    }
+                    mainHandler.post {
+                        Toast.makeText(appContext, message, Toast.LENGTH_LONG).show()
+                    }
+                }.start()
             }, 500)
         }
 

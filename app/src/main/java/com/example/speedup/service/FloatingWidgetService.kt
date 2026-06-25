@@ -4,9 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.provider.Settings
 import android.os.Build
 import android.os.Handler
@@ -25,13 +28,15 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.widget.NestedScrollView
 import androidx.core.app.NotificationCompat
 import com.example.speedup.R
 import com.example.speedup.data.model.JobPosting
 import com.example.speedup.data.repository.ProfileRepository
 import com.example.speedup.ui.analysis.JobFitAnalysisActivity
-import com.example.speedup.engine.SemanticMatcher
+import com.example.speedup.util.AutofillBridge
 import java.util.ArrayList
+import java.util.concurrent.Executors
 import kotlin.math.abs
 
 class FloatingWidgetService : Service() {
@@ -39,6 +44,8 @@ class FloatingWidgetService : Service() {
     companion object {
         private const val CHANNEL_ID = "floating_widget_channel"
         private const val NOTIFICATION_ID = 9001
+        private const val REFRESH_DEBOUNCE_MS = 2500L
+        private const val SCAN_CACHE_MS = 4000L
 
         var instance: FloatingWidgetService? = null
             private set
@@ -47,6 +54,8 @@ class FloatingWidgetService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var repository: ProfileRepository
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scanExecutor = Executors.newSingleThreadExecutor()
+    private val refreshRunnable = Runnable { doRefreshJobAnalysis() }
 
     private var widgetView: View? = null
     private var panelView: View? = null
@@ -56,8 +65,30 @@ class FloatingWidgetService : Service() {
     private var isDetected = false
     private var isExpanded = false
     private var accessibilityOff = false
+    private var isScanning = false
     private var currentJobPosting: JobPosting? = null
     private var currentFillPlan: FillPlan? = null
+    private var cachedJob: JobPosting? = null
+    private var cacheTime = 0L
+    private var autofillRestoreRunnable: Runnable? = null
+
+    private val autofillResultReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != AutofillBridge.ACTION_RESULT) return
+            autofillRestoreRunnable?.let { mainHandler.removeCallbacks(it) }
+            autofillRestoreRunnable = null
+            val filled = intent.getIntExtra(AutofillBridge.EXTRA_FILLED_COUNT, 0)
+            val total = intent.getIntExtra(AutofillBridge.EXTRA_TOTAL_DETECTED, 0)
+            val fillable = intent.getIntExtra(AutofillBridge.EXTRA_FILLABLE_COUNT, 0)
+            val showToast = intent.getBooleanExtra(AutofillBridge.EXTRA_SHOW_TOAST, true)
+            mainHandler.post {
+                restoreWidgetAfterFill()
+                if (showToast) {
+                    showAutofillToast(filled, total, fillable)
+                }
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,28 +97,64 @@ class FloatingWidgetService : Service() {
         instance = this
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         repository = ProfileRepository(this)
+        val filter = IntentFilter(AutofillBridge.ACTION_RESULT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(autofillResultReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(autofillResultReceiver, filter)
+        }
         startNotification()
         setupWidget()
-        Thread {
-            SemanticMatcher.initialize(applicationContext)
-        }.start()
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(autofillResultReceiver)
+        } catch (_: Exception) {
+        }
+        mainHandler.removeCallbacks(refreshRunnable)
+        scanExecutor.shutdownNow()
+        widgetView?.let {
+            try { windowManager.removeView(it) } catch (_: Exception) {}
+        }
+        widgetAttached = false
+        panelView?.let { windowManager.removeView(it) }
+        previewView?.let { windowManager.removeView(it) }
+        widgetView = null
+        panelView = null
+        previewView = null
+        if (instance == this) instance = null
+        super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        refreshJobAnalysis()
+        scheduleRefreshJobAnalysis()
         return START_STICKY
     }
 
     fun onScreenContentChanged() {
-        mainHandler.post { refreshJobAnalysis() }
+        if (isExpanded) return
+        scheduleRefreshJobAnalysis()
     }
 
-    private fun refreshJobAnalysis() {
-        if (!repository.isProfileSetupCompleted()) return
+    private fun scheduleRefreshJobAnalysis() {
+        mainHandler.removeCallbacks(refreshRunnable)
+        mainHandler.postDelayed(refreshRunnable, REFRESH_DEBOUNCE_MS)
+    }
+
+    private fun doRefreshJobAnalysis() {
+        if (!repository.isProfileSetupCompleted() || isExpanded) return
         val accessibility = SpeedUpAccessibilityService.instance ?: return
-        val job = accessibility.scanAndCompareJob(repository)
-        currentJobPosting = job
-        setJobDetectedState(true)
+        scanExecutor.execute {
+            val job = accessibility.scanAndCompareJob(repository)
+            cachedJob = job
+            cacheTime = System.currentTimeMillis()
+            mainHandler.post {
+                currentJobPosting = job
+                setJobDetectedState(job.jdDetected)
+            }
+        }
     }
 
     private fun startNotification() {
@@ -130,6 +197,7 @@ class FloatingWidgetService : Service() {
         }
 
         windowManager.addView(widgetView, widgetParams)
+        widgetAttached = true
 
         val button = widgetView?.findViewById<FrameLayout>(R.id.widget_button)
         button?.setOnTouchListener(object : View.OnTouchListener {
@@ -180,11 +248,10 @@ class FloatingWidgetService : Service() {
                 val score = currentJobPosting?.fitScore ?: 0
                 badge?.text = score.toString()
                 badge?.visibility = View.VISIBLE
-                pulse?.animate()?.scaleX(1.3f)?.scaleY(1.3f)?.alpha(0.4f)?.setDuration(1000)?.withEndAction {
-                    pulse.scaleX = 1.0f
-                    pulse.scaleY = 1.0f
-                    pulse.alpha = 0.0f
-                    if (isDetected) setJobDetectedState(true)
+                pulse?.animate()?.scaleX(1.2f)?.scaleY(1.2f)?.alpha(0.3f)?.setDuration(600)?.withEndAction {
+                    pulse?.scaleX = 1.0f
+                    pulse?.scaleY = 1.0f
+                    pulse?.alpha = 0.0f
                 }?.start()
             } else {
                 badge?.visibility = View.GONE
@@ -195,21 +262,165 @@ class FloatingWidgetService : Service() {
     }
 
     private fun expandPanel() {
-        if (isExpanded) return
+        if (isExpanded || isScanning) return
         isExpanded = true
+        isScanning = true
         widgetView?.visibility = View.GONE
+        accessibilityOff = SpeedUpAccessibilityService.instance == null
 
-        // Brief delay so Chrome regains accessibility focus after widget hides
-        mainHandler.postDelayed({
+        showPanelShell()
+        val useCache = cachedJob != null &&
+            System.currentTimeMillis() - cacheTime < SCAN_CACHE_MS
+
+        if (useCache && cachedJob != null) {
+            bindPanelContent(cachedJob!!)
+            isScanning = false
+            refreshJobInBackground()
+            return
+        }
+
+        scanExecutor.execute {
             val accessibility = SpeedUpAccessibilityService.instance
-            accessibilityOff = accessibility == null
-            currentJobPosting = if (accessibility != null) {
+            val job = if (accessibility != null) {
                 accessibility.scanAndCompareJob(repository)
             } else {
                 buildAccessibilityOffPosting()
             }
-            showExpandedPanel(currentJobPosting!!)
-        }, 120)
+            cachedJob = job
+            cacheTime = System.currentTimeMillis()
+            mainHandler.post {
+                if (isExpanded) bindPanelContent(job)
+                isScanning = false
+            }
+        }
+    }
+
+    private fun refreshJobInBackground() {
+        scanExecutor.execute {
+            val accessibility = SpeedUpAccessibilityService.instance ?: return@execute
+            val job = accessibility.scanAndCompareJob(repository)
+            cachedJob = job
+            cacheTime = System.currentTimeMillis()
+            mainHandler.post {
+                if (isExpanded) bindPanelContent(job)
+                currentJobPosting = job
+            }
+        }
+    }
+
+    private fun showPanelShell() {
+        val li = LayoutInflater.from(this)
+        panelView = li.inflate(R.layout.overlay_widget_panel, null)
+
+        panelView?.findViewById<TextView>(R.id.panel_job_title)?.text = "Analyzing job…"
+        panelView?.findViewById<TextView>(R.id.panel_job_subtitle)?.text = "Reading screen content"
+        panelView?.findViewById<TextView>(R.id.panel_score_text)?.text = "…"
+        panelView?.findViewById<ProgressBar>(R.id.panel_score_progress)?.isIndeterminate = true
+
+        applyPanelMaxHeight()
+        attachPanelToWindow()
+        wirePanelActions(null)
+    }
+
+    private fun bindPanelContent(job: JobPosting) {
+        currentJobPosting = job
+        val li = LayoutInflater.from(this)
+        val panel = panelView ?: return
+
+        panel.findViewById<TextView>(R.id.panel_job_title)?.text = job.title
+        panel.findViewById<TextView>(R.id.panel_job_subtitle)?.text =
+            buildString {
+                append(job.company)
+                if (job.location.isNotBlank() && job.location != "—") {
+                    append(" • ").append(job.location)
+                }
+            }
+        panel.findViewById<ProgressBar>(R.id.panel_score_progress)?.apply {
+            isIndeterminate = false
+            progress = job.fitScore
+        }
+        panel.findViewById<TextView>(R.id.panel_score_text)?.text = "${job.fitScore}%"
+
+        val fitLabel = panel.findViewById<TextView>(R.id.panel_fit_label)
+        val fitSubtitle = panel.findViewById<TextView>(R.id.panel_fit_subtitle)
+        fitLabel?.text = job.fitLabel.ifBlank { fitLabelForScore(job.fitScore) }
+        fitSubtitle?.text = job.fitSubtitle.ifBlank { fitSubtitleForScore(job) }
+        fitLabel?.setTextColor(fitLabelColor(job.fitScore))
+
+        populateAnalysisPoints(li, job)
+        wirePanelActions(job)
+    }
+
+    private fun applyPanelMaxHeight() {
+        val scroll = panelView?.findViewById<NestedScrollView>(R.id.panel_scroll) ?: return
+        val maxScrollHeight = (resources.displayMetrics.heightPixels * 0.40f).toInt()
+        scroll.layoutParams = (scroll.layoutParams as LinearLayout.LayoutParams).apply {
+            height = maxScrollHeight
+        }
+    }
+
+    private fun attachPanelToWindow() {
+        val panelParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayLayoutType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        windowManager.addView(panelView, panelParams)
+        setupDismissOnOutsideTouch(panelView, R.id.panel_card) { collapsePanel() }
+    }
+
+    /** Dismiss only when tapping the dimmed area outside the card — not on card content. */
+    private fun setupDismissOnOutsideTouch(root: View?, cardId: Int, onDismiss: () -> Unit) {
+        root ?: return
+        root.setOnTouchListener { _, event ->
+            if (event.action != MotionEvent.ACTION_UP) return@setOnTouchListener false
+            val card = root.findViewById<View>(cardId) ?: return@setOnTouchListener false
+            val rect = Rect()
+            card.getGlobalVisibleRect(rect)
+            if (!rect.contains(event.rawX.toInt(), event.rawY.toInt())) {
+                onDismiss()
+                return@setOnTouchListener true
+            }
+            false
+        }
+    }
+
+    private fun wirePanelActions(job: JobPosting?) {
+        panelView?.findViewById<ImageButton>(R.id.btn_panel_close)?.setOnClickListener { collapsePanel() }
+        panelView?.findViewById<Button>(R.id.btn_skip)?.setOnClickListener { collapsePanel() }
+
+        val autoFillBtn = panelView?.findViewById<Button>(R.id.btn_auto_fill)
+        if (accessibilityOff) {
+            autoFillBtn?.text = "Enable Accessibility Service"
+            autoFillBtn?.setOnClickListener { openAccessibilitySettings() }
+        } else {
+            autoFillBtn?.text = "⚡Auto Fill Form"
+            autoFillBtn?.isEnabled = !isScanning
+            autoFillBtn?.setOnClickListener { executeAutoFill(showToast = true) }
+        }
+
+        panelView?.findViewById<Button>(R.id.btn_view_analysis)?.apply {
+            isEnabled = job != null && !isScanning
+            setOnClickListener {
+                if (job == null) return@setOnClickListener
+                collapsePanel()
+                startActivity(
+                    Intent(this@FloatingWidgetService, JobFitAnalysisActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra("JOB_TITLE", job.title)
+                        putExtra("JOB_COMPANY", job.company)
+                        putExtra("JOB_FIT_SCORE", job.fitScore)
+                        putExtra("FIT_LABEL", job.fitLabel)
+                        putExtra("FIT_SUBTITLE", job.fitSubtitle)
+                        putStringArrayListExtra("SKILLS_MATCHED", ArrayList(job.skillsMatched))
+                        putStringArrayListExtra("SKILLS_MISSING", ArrayList(job.skillsMissing))
+                        putStringArrayListExtra("SKILLS_PARTIAL", ArrayList(job.skillsPartial))
+                    }
+                )
+            }
+        }
     }
 
     private fun buildAccessibilityOffPosting(): JobPosting = JobPosting(
@@ -240,63 +451,6 @@ class FloatingWidgetService : Service() {
             ).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Open Settings → Accessibility → Speed Up", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun showExpandedPanel(job: JobPosting) {
-        val li = LayoutInflater.from(this)
-        panelView = li.inflate(R.layout.overlay_widget_panel, null)
-
-        panelView?.findViewById<TextView>(R.id.panel_job_title)?.text = job.title
-        panelView?.findViewById<TextView>(R.id.panel_job_subtitle)?.text = "${job.company} • ${job.location}"
-        panelView?.findViewById<TextView>(R.id.panel_score_text)?.text = "${job.fitScore}%"
-        panelView?.findViewById<ProgressBar>(R.id.panel_score_progress)?.progress = job.fitScore
-
-        val fitLabel = panelView?.findViewById<TextView>(R.id.panel_fit_label)
-        val fitSubtitle = panelView?.findViewById<TextView>(R.id.panel_fit_subtitle)
-        fitLabel?.text = job.fitLabel.ifBlank { fitLabelForScore(job.fitScore) }
-        fitSubtitle?.text = job.fitSubtitle.ifBlank { fitSubtitleForScore(job) }
-        fitLabel?.setTextColor(fitLabelColor(job.fitScore))
-
-        populateAnalysisPoints(li, job)
-
-        val panelParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            overlayLayoutType(),
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-
-        windowManager.addView(panelView, panelParams)
-
-        panelView?.findViewById<View>(R.id.panel_dismiss_area)?.setOnClickListener { collapsePanel() }
-        panelView?.findViewById<ImageButton>(R.id.btn_panel_close)?.setOnClickListener { collapsePanel() }
-        panelView?.findViewById<Button>(R.id.btn_skip)?.setOnClickListener { collapsePanel() }
-
-        val autoFillBtn = panelView?.findViewById<Button>(R.id.btn_auto_fill)
-        if (accessibilityOff) {
-            autoFillBtn?.text = "Enable Accessibility Service"
-            autoFillBtn?.setOnClickListener { openAccessibilitySettings() }
-        } else {
-            autoFillBtn?.text = "⚡ Auto Fill Form"
-            autoFillBtn?.setOnClickListener { showFillPreview() }
-        }
-        panelView?.findViewById<Button>(R.id.btn_view_analysis)?.setOnClickListener {
-            collapsePanel()
-            startActivity(
-                Intent(this, JobFitAnalysisActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    putExtra("JOB_TITLE", job.title)
-                    putExtra("JOB_COMPANY", job.company)
-                    putExtra("JOB_FIT_SCORE", job.fitScore)
-                    putExtra("FIT_LABEL", job.fitLabel)
-                    putExtra("FIT_SUBTITLE", job.fitSubtitle)
-                    putStringArrayListExtra("SKILLS_MATCHED", ArrayList(job.skillsMatched))
-                    putStringArrayListExtra("SKILLS_MISSING", ArrayList(job.skillsMissing))
-                    putStringArrayListExtra("SKILLS_PARTIAL", ArrayList(job.skillsPartial))
-                }
-            )
         }
     }
 
@@ -420,6 +574,7 @@ class FloatingWidgetService : Service() {
             previewView = null
         }
         isExpanded = false
+        isScanning = false
         widgetView?.visibility = View.VISIBLE
     }
 
@@ -430,10 +585,24 @@ class FloatingWidgetService : Service() {
             return
         }
 
-        // Minimize overlay interference while scanning
-        panelView?.visibility = View.GONE
-        val plan = accessibility.scanAndBuildFillPlan(repository)
+        val fillBtn = panelView?.findViewById<Button>(R.id.btn_auto_fill)
+        fillBtn?.isEnabled = false
+        fillBtn?.text = "Scanning form fields…"
+
+        scanExecutor.execute {
+            val plan = accessibility.scanAndBuildFillPlan(repository)
+            mainHandler.post {
+                if (!isExpanded) return@post
+                fillBtn?.isEnabled = true
+                fillBtn?.text = "⚡Auto Fill Form"
+                showFillPreviewUi(plan)
+            }
+        }
+    }
+
+    private fun showFillPreviewUi(plan: FillPlan) {
         currentFillPlan = plan
+        panelView?.visibility = View.GONE
 
         val li = LayoutInflater.from(this)
         previewView = li.inflate(R.layout.overlay_fill_preview, null)
@@ -446,8 +615,8 @@ class FloatingWidgetService : Service() {
             PixelFormat.TRANSLUCENT
         )
         windowManager.addView(previewView, previewParams)
+        setupDismissOnOutsideTouch(previewView, R.id.preview_card) { dismissPreview() }
 
-        previewView?.findViewById<View>(R.id.preview_dismiss_area)?.setOnClickListener { dismissPreview() }
         previewView?.findViewById<ImageButton>(R.id.btn_preview_close)?.setOnClickListener { dismissPreview() }
 
         val fieldsContainer = previewView?.findViewById<LinearLayout>(R.id.preview_fields_container)
@@ -501,32 +670,81 @@ class FloatingWidgetService : Service() {
     }
 
     private fun executeAutoFill(showToast: Boolean) {
-        val accessibility = SpeedUpAccessibilityService.instance
-        if (accessibility == null) {
-            Toast.makeText(this, "Enable Accessibility Service in Settings", Toast.LENGTH_LONG).show()
-            return
+        previewView?.let {
+            windowManager.removeView(it)
+            previewView = null
+        }
+        panelView?.let {
+            windowManager.removeView(it)
+            panelView = null
+        }
+        isExpanded = false
+        widgetView?.let { w ->
+            try {
+                windowManager.removeView(w)
+                widgetAttached = false
+            } catch (_: Exception) { /* already removed */ }
         }
 
-        // Hide overlays first so the job app regains focus and accessibility can see its fields
-        dismissPreview()
-        collapsePanel()
+        if (showToast) {
+            Toast.makeText(this, "Filling form…", Toast.LENGTH_SHORT).show()
+        }
 
-        mainHandler.postDelayed({
-            val result = accessibility.performAutoFill(repository)
-            if (showToast) {
-                val message = when {
-                    result.filledCount > 0 ->
-                        "Auto-filled ${result.filledCount} field(s) from your profile"
-                    result.totalDetected == 0 ->
-                        "No form fields found. Open a job application form first, then tap Auto Fill."
-                    result.fillable.isNotEmpty() ->
-                        "Found ${result.fillable.size} fields but couldn't fill them. Tap each field in the form and retry."
-                    else ->
-                        "No fields matched your profile. Add more info in the Profile tab."
+        // Cancel any previous restore timer before setting up a new one
+        autofillRestoreRunnable?.let { mainHandler.removeCallbacks(it) }
+        autofillRestoreRunnable = null
+
+        scanExecutor.execute {
+            Thread.sleep(700)
+            sendBroadcast(
+                Intent(AutofillBridge.ACTION_REQUEST).apply {
+                    setPackage(packageName)
+                    putExtra(AutofillBridge.EXTRA_SHOW_TOAST, showToast)
                 }
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            )
+            // Post the fallback timer on the main thread to avoid racing
+            // with the broadcast result receiver (which also runs on main)
+            mainHandler.post {
+                val restoreFallback = Runnable {
+                    restoreWidgetAfterFill()
+                    autofillRestoreRunnable = null
+                }
+                autofillRestoreRunnable = restoreFallback
+                mainHandler.postDelayed(restoreFallback, 12_000L)
             }
-        }, 450)
+        }
+    }
+
+    private var widgetAttached = false
+
+    private fun restoreWidgetAfterFill() {
+        autofillRestoreRunnable?.let { mainHandler.removeCallbacks(it) }
+        autofillRestoreRunnable = null
+        widgetView?.let { w ->
+            widgetParams?.let { params ->
+                if (!widgetAttached) {
+                    try {
+                        windowManager.addView(w, params)
+                        widgetAttached = true
+                    } catch (_: Exception) { /* already attached */ }
+                }
+            }
+            w.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showAutofillToast(filledCount: Int, totalDetected: Int, fillableCount: Int) {
+        val message = when {
+            filledCount > 0 ->
+                "Auto-filled $filledCount field(s) from your profile"
+            totalDetected == 0 ->
+                "No form fields found. Scroll to the application form and try again."
+            fillableCount > 0 ->
+                "Found $fillableCount fields but couldn't fill them. Tap a field in the form and retry."
+            else ->
+                "No fields matched your profile. Add more info in the Profile tab."
+        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     private fun dismissPreview() {
@@ -563,16 +781,5 @@ class FloatingWidgetService : Service() {
             fitLabel = "No JD Detected",
             fitSubtitle = "Navigate to a job description and tap again"
         )
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        widgetView?.let { windowManager.removeView(it) }
-        panelView?.let { windowManager.removeView(it) }
-        previewView?.let { windowManager.removeView(it) }
-        widgetView = null
-        panelView = null
-        previewView = null
-        if (instance == this) instance = null
     }
 }

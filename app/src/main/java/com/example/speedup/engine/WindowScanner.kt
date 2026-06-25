@@ -34,6 +34,20 @@ class WindowScanner(private val service: AccessibilityService) {
             "com.greenhouse.app",
             "com.lever.Lever"
         )
+
+        fun isBrowserPackage(packageName: String): Boolean =
+            packageName in BROWSER_PACKAGES ||
+                packageName.contains("chrome", ignoreCase = true) ||
+                packageName.contains("browser", ignoreCase = true)
+
+        fun isFormHostPackage(packageName: String): Boolean =
+            isBrowserPackage(packageName) ||
+                packageName in JOB_APP_PACKAGES ||
+                packageName.contains("workday", ignoreCase = true) ||
+                packageName.contains("linkedin", ignoreCase = true) ||
+                packageName.contains("greenhouse", ignoreCase = true) ||
+                packageName.contains("lever", ignoreCase = true) ||
+                packageName.contains("indeed", ignoreCase = true)
     }
 
     data class WindowTarget(
@@ -42,11 +56,6 @@ class WindowScanner(private val service: AccessibilityService) {
         val fieldCount: Int,
         val textCount: Int
     )
-
-    fun isBrowserPackage(packageName: String): Boolean =
-        packageName in BROWSER_PACKAGES ||
-            packageName.contains("chrome", ignoreCase = true) ||
-            packageName.contains("browser", ignoreCase = true)
 
     /** Windows likely containing job posting content (browsers first, then job apps). */
     fun findJobContentWindows(): List<WindowTarget> {
@@ -91,14 +100,60 @@ class WindowScanner(private val service: AccessibilityService) {
         val candidates = mutableListOf<WindowTarget>()
         collectAllWindows(ownPackage, candidates, countFields = true)
 
-        val best = candidates.maxByOrNull { it.fieldCount }
-        if (best != null && best.fieldCount > 0) {
+        val withFields = candidates.filter { it.fieldCount > 0 }
+        val best = withFields.maxWithOrNull(
+            compareByDescending<WindowTarget> { if (isBrowserPackage(it.packageName)) 1 else 0 }
+                .thenByDescending { windowArea(it.root) }
+                .thenByDescending { it.fieldCount }
+        )
+        if (best != null) {
             Log.d(TAG, "Best form window: ${best.packageName} (${best.fieldCount} fields)")
             return best
         }
 
+        // Fallback: largest browser window (page content vs toolbar) when field count is 0
+        val browserFallback = candidates
+            .filter { isBrowserPackage(it.packageName) }
+            .maxByOrNull { windowArea(it.root) }
+        if (browserFallback != null) {
+            Log.w(TAG, "No counted fields; using largest browser window (${browserFallback.packageName})")
+            return browserFallback
+        }
+
         Log.w(TAG, "No form window found among ${candidates.size} candidates")
         return null
+    }
+
+    private fun windowArea(root: AccessibilityNodeInfo): Int {
+        val rect = android.graphics.Rect()
+        root.getBoundsInScreen(rect)
+        return rect.width() * rect.height()
+    }
+
+    /** All windows that may contain form fields — content-rich windows first. */
+    fun findAllFormWindows(): List<WindowTarget> {
+        val ownPackage = service.packageName
+        val candidates = mutableListOf<WindowTarget>()
+        collectAllWindows(ownPackage, candidates, countFields = true)
+
+        val formHosts = candidates
+            .filter {
+                isFormHostPackage(it.packageName) &&
+                    (it.fieldCount > 0 || it.textCount >= 5)
+            }
+            .sortedWith(
+                compareByDescending<WindowTarget> { windowArea(it.root) }
+                    .thenByDescending { it.fieldCount }
+                    .thenByDescending { it.textCount }
+            )
+        if (formHosts.isNotEmpty()) return formHosts
+
+        return candidates
+            .filter { it.fieldCount > 0 || it.textCount >= 8 }
+            .sortedWith(
+                compareByDescending<WindowTarget> { it.fieldCount }
+                    .thenByDescending { windowArea(it.root) }
+            )
     }
 
     private fun collectAllWindows(
@@ -117,7 +172,7 @@ class WindowScanner(private val service: AccessibilityService) {
         if (activeRoot != null) {
             val pkg = activeRoot.packageName?.toString()
             if (pkg != null && pkg != ownPackage) {
-                val fieldCount = countFormFields(activeRoot)
+                val fieldCount = countFormFields(activeRoot, pkg)
                 val textCount = countTextNodes(activeRoot)
                 if (fieldCount > 0 || textCount >= 5) {
                     candidates.add(WindowTarget(activeRoot, pkg, fieldCount, textCount))
@@ -144,11 +199,13 @@ class WindowScanner(private val service: AccessibilityService) {
         val pkg = root.packageName?.toString() ?: return
         if (pkg == ownPackage) return
 
-        val fieldCount = countFormFields(root)
+        val fieldCount = countFormFields(root, pkg)
         val textCount = countTextNodes(root)
 
         if (countFields) {
             if (fieldCount > 0) {
+                candidates.add(WindowTarget(root, pkg, fieldCount, textCount))
+            } else if (isFormHostPackage(pkg) && textCount >= 5) {
                 candidates.add(WindowTarget(root, pkg, fieldCount, textCount))
             }
         } else if (textCount >= 1) {
@@ -156,17 +213,22 @@ class WindowScanner(private val service: AccessibilityService) {
         }
     }
 
-    fun countFormFields(node: AccessibilityNodeInfo?): Int {
+    fun countFormFields(node: AccessibilityNodeInfo?, packageName: String = ""): Int {
         if (node == null) return 0
         var count = 0
-        if (FormFieldDetector.isFormField(node)) count++
+        if (FormFieldDetector.isFormField(node, packageName) &&
+            !FormFieldDetector.isBrowserChromeField(node, screenHeight, packageName)
+        ) count++
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
-            count += countFormFields(child)
+            count += countFormFields(child, packageName)
             child?.recycle()
         }
         return count
     }
+
+    private val screenHeight: Int
+        get() = service.resources.displayMetrics.heightPixels
 
     fun countTextNodes(node: AccessibilityNodeInfo?): Int {
         if (node == null) return 0
@@ -187,7 +249,13 @@ class WindowScanner(private val service: AccessibilityService) {
         out: MutableList<AccessibilityNodeInfo>
     ) {
         if (node == null) return
-        if (FormFieldDetector.isFormField(node, packageName)) {
+        if (FormFieldDetector.isFormField(node, packageName) &&
+            !FormFieldDetector.isBrowserChromeField(
+                node,
+                service.resources.displayMetrics.heightPixels,
+                packageName
+            )
+        ) {
             out.add(AccessibilityNodeInfo.obtain(node))
         }
         for (i in 0 until node.childCount) {
@@ -211,34 +279,52 @@ object FormFieldDetector {
     )
 
     fun isFormField(node: AccessibilityNodeInfo, packageName: String = ""): Boolean {
-        if (!node.isVisibleToUser && !node.isFocusable) return false
+        val isFormHost = WindowScanner.isFormHostPackage(packageName)
 
         if (node.isEditable) return true
 
         val className = node.className?.toString()?.lowercase() ?: ""
         if (editableClassPatterns.any { className.contains(it) }) {
-            return true
+            return node.isVisibleToUser || node.isFocusable || isFormHost
         }
 
         val hasTextAction = node.actionList.any { action ->
             action.id == AccessibilityNodeInfo.ACTION_SET_TEXT ||
                 action.id == AccessibilityNodeInfo.ACTION_PASTE
         }
-        if (hasTextAction && node.isFocusable) return true
 
-        // Chrome / WebView: contenteditable-like nodes expose hint or placeholder
-        if (WindowScanner.BROWSER_PACKAGES.contains(packageName) ||
-            packageName.contains("chrome", ignoreCase = true) ||
-            packageName.contains("browser", ignoreCase = true) ||
-            className.contains("webview")
-        ) {
+        if (hasTextAction && (node.isFocusable || node.isEditable)) return true
+
+        if (isFormHost || className.contains("webview")) {
             val hint = node.hintText?.toString()?.trim() ?: ""
             val desc = node.contentDescription?.toString()?.trim() ?: ""
-            if (node.isFocusable && (hint.isNotEmpty() || desc.isNotEmpty()) && hasTextAction) {
-                return true
+            if ((hint.isNotEmpty() || desc.isNotEmpty()) && node.isFocusable) return true
+
+            if (node.isFocusable && node.isVisibleToUser) {
+                val label = FieldMapper.findLabelFor(node)
+                if (label.isNotBlank()) return true
             }
         }
 
+        return false
+    }
+
+    /** Chrome URL bar and top toolbar inputs — browser chrome only, not app forms. */
+    fun isBrowserChromeField(node: AccessibilityNodeInfo, screenHeight: Int, packageName: String = ""): Boolean {
+        if (!WindowScanner.isBrowserPackage(packageName)) return false
+        val id = node.viewIdResourceName.orEmpty().lowercase()
+        if (id.contains("url") || id.contains("omnibox") || id.contains("search_box") ||
+            id.contains("loc_bar") || id.contains("toolbar")
+        ) {
+            return true
+        }
+        val hint = node.hintText?.toString()?.lowercase().orEmpty()
+        val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
+        if (hint.contains("search") || desc.contains("search or type web address")) return true
+
+        val rect = android.graphics.Rect()
+        node.getBoundsInScreen(rect)
+        if (screenHeight > 0 && rect.bottom <= screenHeight * 0.14) return true
         return false
     }
 }

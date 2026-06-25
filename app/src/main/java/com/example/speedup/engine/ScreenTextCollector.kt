@@ -13,6 +13,7 @@ class ScreenTextCollector(private val service: AccessibilityService) {
     companion object {
         private const val TAG = "ScreenTextCollector"
         private const val MAX_NODE_TEXT = 4000
+        private const val MAX_NODES = 600
     }
 
     data class CollectionResult(
@@ -21,7 +22,10 @@ class ScreenTextCollector(private val service: AccessibilityService) {
         val windowCount: Int
     )
 
+    private var nodesVisited = 0
+
     fun collect(): CollectionResult {
+        nodesVisited = 0
         val ownPackage = service.packageName
         val merged = LinkedHashSet<String>()
         var bestPackage: String? = null
@@ -54,7 +58,8 @@ class ScreenTextCollector(private val service: AccessibilityService) {
     }
 
     private fun collectFromNode(node: AccessibilityNodeInfo?, out: MutableSet<String>) {
-        if (node == null) return
+        if (node == null || nodesVisited >= MAX_NODES) return
+        nodesVisited++
 
         fun addFragment(raw: String) {
             val text = raw.trim()

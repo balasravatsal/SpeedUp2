@@ -79,21 +79,50 @@ object FieldMapper {
         )
     )
 
-    private val appOverrides: Map<String, Map<String, CanonicalField>> = mapOf(
-        "com.linkedin.android" to mapOf(
+    private val appOverrides: Map<String, Map<String, CanonicalField>> = buildAppOverrides()
+
+    private fun buildAppOverrides(): Map<String, Map<String, CanonicalField>> {
+        val web = webFormOverrides()
+        val linkedIn = mapOf(
             "first_name" to CanonicalField.FIRST_NAME,
+            "firstname" to CanonicalField.FIRST_NAME,
             "last_name" to CanonicalField.LAST_NAME,
+            "lastname" to CanonicalField.LAST_NAME,
             "email_address" to CanonicalField.EMAIL,
+            "email" to CanonicalField.EMAIL,
             "phone_number" to CanonicalField.PHONE,
             "phone" to CanonicalField.PHONE,
-            "email" to CanonicalField.EMAIL
-        ),
-        "com.android.chrome" to webFormOverrides(),
-        "com.chrome.beta" to webFormOverrides(),
-        "com.chrome.dev" to webFormOverrides(),
-        "org.mozilla.firefox" to webFormOverrides(),
-        "com.microsoft.emmx" to webFormOverrides()
-    )
+            "mobile" to CanonicalField.PHONE,
+            "city" to CanonicalField.CITY,
+            "location" to CanonicalField.LOCATION,
+            "linkedin" to CanonicalField.LINKEDIN,
+            "website" to CanonicalField.PORTFOLIO
+        )
+        val workday = mapOf(
+            "first_name" to CanonicalField.FIRST_NAME,
+            "firstname" to CanonicalField.FIRST_NAME,
+            "last_name" to CanonicalField.LAST_NAME,
+            "lastname" to CanonicalField.LAST_NAME,
+            "email" to CanonicalField.EMAIL,
+            "phone" to CanonicalField.PHONE,
+            "address" to CanonicalField.LOCATION,
+            "city" to CanonicalField.CITY,
+            "state" to CanonicalField.STATE,
+            "postal" to CanonicalField.LOCATION,
+            "zip" to CanonicalField.LOCATION,
+            "country" to CanonicalField.COUNTRY,
+            "linkedin" to CanonicalField.LINKEDIN,
+            "website" to CanonicalField.PORTFOLIO
+        )
+        val overrides = mutableMapOf(
+            "com.linkedin.android" to linkedIn,
+            "com.workday.workdroidapp" to workday
+        )
+        for (browser in WindowScanner.BROWSER_PACKAGES) {
+            overrides[browser] = web
+        }
+        return overrides
+    }
 
     private fun webFormOverrides(): Map<String, CanonicalField> = mapOf(
         "fname" to CanonicalField.FIRST_NAME,
@@ -131,18 +160,23 @@ object FieldMapper {
     ): FieldMatch {
         val signals = buildSignals(viewId, hint, contentDesc, labelText)
 
-        matchFromInputType(inputType)?.let { field ->
-            return FieldMatch(field, 0.95f, 1, "inputType")
-        }
-
+        // Layer 1: App-specific overrides (most precise — view ID mapped per-app)
         matchFromAppOverride(packageName, viewId)?.let { field ->
-            return FieldMatch(field, 0.98f, 2, viewId)
+            return FieldMatch(field, 0.98f, 1, viewId)
         }
 
+        // Layer 2: Keyword alias map (distinguishes first/last/full name etc.)
         matchFromKeywords(signals)?.let { (field, alias) ->
-            return FieldMatch(field, 0.92f, 3, alias)
+            return FieldMatch(field, 0.92f, 2, alias)
         }
 
+        // Layer 3: InputType flags — coarse (e.g. PERSON_NAME → FULL_NAME), so only
+        // used when more specific keyword/override matching didn't fire
+        matchFromInputType(inputType)?.let { field ->
+            return FieldMatch(field, 0.85f, 3, "inputType")
+        }
+
+        // Layer 4: Fuzzy (Jaro-Winkler)
         matchFromFuzzy(signals)?.let { (field, alias, score) ->
             return FieldMatch(field, score.toFloat(), 4, alias)
         }
@@ -173,7 +207,8 @@ object FieldMapper {
 
     private fun buildSignals(viewId: String, hint: String, contentDesc: String, labelText: String): String {
         val idPart = viewId.substringAfterLast("/").replace("_", " ")
-        return FuzzyMatcher.normalize("$idPart $hint $contentDesc $labelText")
+        val cleanLabel = labelText.replace("*", "").trim()
+        return FuzzyMatcher.normalize("$idPart $hint $contentDesc $cleanLabel")
     }
 
     private fun matchFromInputType(inputType: Int): CanonicalField? {
@@ -190,12 +225,28 @@ object FieldMapper {
     }
 
     private fun matchFromAppOverride(packageName: String, viewId: String): CanonicalField? {
-        val overrides = appOverrides[packageName] ?: return null
         val idKey = viewId.substringAfterLast("/").lowercase()
-        overrides[idKey]?.let { return it }
-        // HTML name/id attributes often appear as partial resource names
-        for ((key, field) in overrides) {
-            if (idKey.contains(key)) return field
+        appOverrides[packageName]?.let { overrides ->
+            overrides[idKey]?.let { return it }
+            for ((key, field) in overrides) {
+                if (idKey.contains(key)) return field
+            }
+        }
+        if (WindowScanner.isBrowserPackage(packageName)) {
+            val web = webFormOverrides()
+            web[idKey]?.let { return it }
+            for ((key, field) in web) {
+                if (idKey.contains(key)) return field
+            }
+        }
+        if (packageName.contains("workday", ignoreCase = true) ||
+            packageName.contains("linkedin", ignoreCase = true)
+        ) {
+            val keys = webFormOverrides()
+            keys[idKey]?.let { return it }
+            for ((key, field) in keys) {
+                if (idKey.contains(key)) return field
+            }
         }
         return null
     }
@@ -239,15 +290,19 @@ object FieldMapper {
 
         var parent = node.parent
         var depth = 0
-        while (parent != null && depth < 4) {
+        while (parent != null && depth < 6) {
             for (i in 0 until parent.childCount) {
                 val sibling = parent.getChild(i) ?: continue
                 val className = sibling.className?.toString() ?: ""
-                if (sibling != node && className.contains("TextView", ignoreCase = true)) {
-                    sibling.text?.toString()?.trim()?.takeIf { it.isNotBlank() && it.length < 80 }?.let {
+                val siblingText = sibling.text?.toString()?.trim().orEmpty()
+                if (sibling != node && siblingText.isNotBlank() && siblingText.length < 80) {
+                    val isLabelLike = className.contains("TextView", ignoreCase = true) ||
+                        className.contains("Label", ignoreCase = true) ||
+                        (!sibling.isEditable && !sibling.isFocusable)
+                    if (isLabelLike) {
                         sibling.recycle()
                         parent.recycle()
-                        return it
+                        return siblingText.replace("*", "").trim()
                     }
                 }
                 sibling.recycle()
