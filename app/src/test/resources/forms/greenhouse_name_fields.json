@@ -1,0 +1,10 @@
+{
+  "platform": "greenhouse",
+  "description": "Split name fields — family name should map to LAST_NAME",
+  "fields": [
+    { "label": "First Name", "expected": "FIRST_NAME" },
+    { "label": "Family Name", "expected": "LAST_NAME" },
+    { "label": "Email", "expected": "EMAIL" },
+    { "label": "Phone", "expected": "PHONE" }
+  ]
+}

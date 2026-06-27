@@ -1,0 +1,9 @@
+{
+  "platform": "workday",
+  "description": "Split phone — country code must not receive full phone number mapping",
+  "fields": [
+    { "label": "Country Code", "expected": "COUNTRY_CODE" },
+    { "label": "Phone Number", "expected": "PHONE" },
+    { "label": "Years of Experience", "expected": "YEARS_OF_EXPERIENCE", "widget": "DROPDOWN" }
+  ]
+}

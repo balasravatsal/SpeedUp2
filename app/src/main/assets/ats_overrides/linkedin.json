@@ -1,0 +1,15 @@
+{
+  "first_name": "FIRST_NAME",
+  "firstname": "FIRST_NAME",
+  "last_name": "LAST_NAME",
+  "lastname": "LAST_NAME",
+  "email_address": "EMAIL",
+  "email": "EMAIL",
+  "phone_number": "PHONE",
+  "phone": "PHONE",
+  "mobile": "PHONE",
+  "city": "CITY",
+  "location": "LOCATION",
+  "linkedin": "LINKEDIN",
+  "website": "PORTFOLIO"
+}

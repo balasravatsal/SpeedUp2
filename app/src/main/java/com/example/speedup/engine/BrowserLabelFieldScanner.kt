@@ -40,7 +40,12 @@ object BrowserLabelFieldScanner {
             val input = findNearestInput(labelNode, packageName, screenHeight) ?: continue
             val bounds = Rect()
             input.getBoundsInScreen(bounds)
-            val key = "${bounds.left}:${bounds.top}"
+            val viewId = input.viewIdResourceName
+            val key = if (!viewId.isNullOrBlank()) {
+                viewId
+            } else {
+                "${bounds.left / 24}:${bounds.top / 24}"
+            }
             if (!usedInputs.add(key)) {
                 input.recycle()
                 continue
@@ -142,19 +147,7 @@ object BrowserLabelFieldScanner {
     ): Boolean {
         if (!node.isVisibleToUser) return false
         if (FormFieldDetector.isBrowserChromeField(node, screenHeight, packageName)) return false
-        if (node.isEditable) return true
-
-        val className = node.className?.toString()?.lowercase() ?: ""
-        if (className.contains("edittext") || className.contains("input") ||
-            className.contains("textarea")
-        ) {
-            return node.isFocusable || node.isEditable
-        }
-
-        val hasTextAction = node.actionList.any { action ->
-            action.id == AccessibilityNodeInfo.ACTION_SET_TEXT ||
-                action.id == AccessibilityNodeInfo.ACTION_PASTE
-        }
-        return hasTextAction && node.isFocusable
+        if (FormFieldDetector.isNavigationOrLink(node)) return false
+        return FormFieldDetector.isActualFormInput(node, packageName, screenHeight)
     }
 }

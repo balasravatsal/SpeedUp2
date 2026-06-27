@@ -2,7 +2,9 @@ package com.example.speedup.data.model
 
 data class UserProfile(
     val firstName: String = "",
+    val middleName: String = "",
     val lastName: String = "",
+    val preferredName: String = "",
     val email: String = "",
     val phone: String = "",
     val countryCode: String = "+1",
@@ -10,16 +12,30 @@ data class UserProfile(
     val state: String = "",
     val country: String = "",
     val website: String = "",
+    val github: String = "",
     val linkedIn: String = "",
     val title: String = "",
     val bio: String = "",
     val skills: List<String> = emptyList(),
     val resumeFileName: String = "",
     val resumeUri: String = "",
+    val workAuthorization: String = "",
+    val veteranStatus: String = "",
+    val gender: String = "",
+    val willingToRelocate: String = "",
+    val salaryExpectation: String = "",
+    val noticePeriod: String = "",
+    val referralSource: String = "Job Board",
     val completion: Int = 0
 ) {
     val fullName: String
-        get() = if (firstName.isNotEmpty() || lastName.isNotEmpty()) "$firstName $lastName".trim() else ""
+        get() = listOf(firstName, middleName, lastName)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .ifBlank {
+                if (firstName.isNotEmpty() || lastName.isNotEmpty()) "$firstName $lastName".trim() else ""
+            }
+
     val avatar: String
         get() = if (firstName.isNotEmpty()) firstName.take(1).uppercase() else "U"
 }
@@ -45,11 +61,8 @@ data class JobPosting(
     val company: String,
     val location: String,
     val fitScore: Int,
-    /** JD requirements you satisfy */
     val skillsMatched: List<String>,
-    /** JD requirements you lack */
     val skillsMissing: List<String>,
-    /** JD requirements with weak overlap */
     val skillsPartial: List<String> = emptyList(),
     val skillsIgnored: List<String> = emptyList(),
     val requiredExperience: Double = 0.0,

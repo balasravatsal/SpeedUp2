@@ -35,8 +35,8 @@ object SemanticMatcher {
             tokenizer = WordPieceTokenizer.load(vocabLines)
             Log.d(TAG, "Vocabulary loaded: ${vocabLines.size} tokens")
             
-            // Load ONNX Model
-            val modelBytes = context.assets.open("model_quantized.onnx").use { it.readBytes() }
+            // Load ONNX Model (quantized preferred, full model fallback)
+            val modelBytes = loadModelBytes(context)
             session = env?.createSession(modelBytes)
             Log.d(TAG, "ONNX model loaded successfully")
             
@@ -50,11 +50,27 @@ object SemanticMatcher {
         }
     }
 
+    private fun loadModelBytes(context: Context): ByteArray {
+        val candidates = listOf("model_quantized.onnx", "model.onnx")
+        for (name in candidates) {
+            try {
+                return context.assets.open(name).use { it.readBytes() }.also {
+                    Log.d(TAG, "Loaded ONNX model: $name (${it.size} bytes)")
+                }
+            } catch (_: IOException) {
+                // try next
+            }
+        }
+        throw IOException("No ONNX model found in assets (expected model_quantized.onnx or model.onnx)")
+    }
+
     private fun precomputeDescriptors() {
         val descriptorsMap = mapOf(
             CanonicalField.FIRST_NAME to listOf("first name", "firstname", "given name", "fname", "forename"),
+            CanonicalField.MIDDLE_NAME to listOf("middle name", "middle initial", "mi"),
             CanonicalField.LAST_NAME to listOf("last name", "lastname", "surname", "family name", "lname"),
-            CanonicalField.FULL_NAME to listOf("full name", "fullname", "your name", "complete name"),
+            CanonicalField.PREFERRED_NAME to listOf("preferred name", "nickname", "chosen name"),
+            CanonicalField.FULL_NAME to listOf("full name", "fullname", "your name", "complete name", "legal name"),
             CanonicalField.EMAIL to listOf("email", "email address", "e-mail", "work email", "personal email"),
             CanonicalField.PHONE to listOf("phone", "mobile", "phone number", "mobile number", "contact number", "telephone"),
             CanonicalField.COUNTRY_CODE to listOf("country code", "dial code", "phone code", "area code"),
@@ -64,6 +80,7 @@ object SemanticMatcher {
             CanonicalField.LOCATION to listOf("location", "current location", "address", "where do you live"),
             CanonicalField.LINKEDIN to listOf("linkedin", "linkedin url", "linkedin profile"),
             CanonicalField.PORTFOLIO to listOf("portfolio", "website", "personal website", "github", "portfolio url"),
+            CanonicalField.GITHUB to listOf("github", "github url", "github profile"),
             CanonicalField.CURRENT_TITLE to listOf("current role", "current position", "job title", "current title", "designation"),
             CanonicalField.YEARS_OF_EXPERIENCE to listOf("years of experience", "total experience", "work experience years", "years exp"),
             CanonicalField.COMPANY to listOf("company", "employer", "organization", "current company", "company name"),
@@ -71,7 +88,14 @@ object SemanticMatcher {
             CanonicalField.DEGREE to listOf("degree", "field of study", "major"),
             CanonicalField.SCHOOL to listOf("school", "university", "college", "institution"),
             CanonicalField.COVER_LETTER to listOf("cover letter", "motivation letter", "why join", "why this role"),
-            CanonicalField.ABOUT to listOf("about", "about you", "bio", "summary", "professional summary")
+            CanonicalField.ABOUT to listOf("about", "about you", "bio", "summary", "professional summary"),
+            CanonicalField.WORK_AUTHORIZATION to listOf("work authorization", "authorized to work", "visa status", "right to work"),
+            CanonicalField.VETERAN_STATUS to listOf("veteran", "veteran status", "military service"),
+            CanonicalField.GENDER to listOf("gender", "sex"),
+            CanonicalField.WILLING_TO_RELOCATE to listOf("willing to relocate", "relocation"),
+            CanonicalField.SALARY_EXPECTATION to listOf("salary", "expected salary", "compensation"),
+            CanonicalField.NOTICE_PERIOD to listOf("notice period", "availability", "start date"),
+            CanonicalField.REFERRAL_SOURCE to listOf("how did you hear", "referral source", "source")
         )
 
         for ((field, descriptors) in descriptorsMap) {
@@ -178,7 +202,7 @@ object SemanticMatcher {
         return dotProduct
     }
 
-    fun match(text: String, threshold: Float = 0.72f): FieldMatch? {
+    fun match(text: String, threshold: Float = 0.68f): FieldMatch? {
         if (!isInitialized) return null
         
         val normalizedText = text.lowercase().trim()

@@ -28,15 +28,20 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.core.widget.NestedScrollView
 import androidx.core.app.NotificationCompat
 import com.example.speedup.R
 import com.example.speedup.data.model.JobPosting
 import com.example.speedup.data.repository.ProfileRepository
 import com.example.speedup.ui.analysis.JobFitAnalysisActivity
+import com.example.speedup.engine.CanonicalField
+import com.example.speedup.engine.FieldWidgetType
 import com.example.speedup.util.AutofillBridge
 import java.util.ArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.math.abs
 
 class FloatingWidgetService : Service() {
@@ -46,6 +51,8 @@ class FloatingWidgetService : Service() {
         private const val NOTIFICATION_ID = 9001
         private const val REFRESH_DEBOUNCE_MS = 2500L
         private const val SCAN_CACHE_MS = 4000L
+        private const val FORM_SCAN_CACHE_MS = 8000L
+        private const val AUTOFILL_SCAN_TIMEOUT_MS = 20_000L
 
         var instance: FloatingWidgetService? = null
             private set
@@ -55,11 +62,14 @@ class FloatingWidgetService : Service() {
     private lateinit var repository: ProfileRepository
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanExecutor = Executors.newSingleThreadExecutor()
+    /** Separate queue so Auto Fill is not blocked behind JD analysis scans. */
+    private val autofillScanExecutor = Executors.newSingleThreadExecutor()
     private val refreshRunnable = Runnable { doRefreshJobAnalysis() }
 
     private var widgetView: View? = null
     private var panelView: View? = null
     private var previewView: View? = null
+    private var scanLoadingView: View? = null
     private var widgetParams: WindowManager.LayoutParams? = null
 
     private var isDetected = false
@@ -70,7 +80,11 @@ class FloatingWidgetService : Service() {
     private var currentFillPlan: FillPlan? = null
     private var cachedJob: JobPosting? = null
     private var cacheTime = 0L
+    private var cachedFormFieldCount = 0
+    private var formCacheTime = 0L
     private var autofillRestoreRunnable: Runnable? = null
+    private var isAutofillScanning = false
+    private var autoFillClickCount = 0
 
     private val autofillResultReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -80,11 +94,12 @@ class FloatingWidgetService : Service() {
             val filled = intent.getIntExtra(AutofillBridge.EXTRA_FILLED_COUNT, 0)
             val total = intent.getIntExtra(AutofillBridge.EXTRA_TOTAL_DETECTED, 0)
             val fillable = intent.getIntExtra(AutofillBridge.EXTRA_FILLABLE_COUNT, 0)
+            val formFields = intent.getIntExtra(AutofillBridge.EXTRA_FORM_FIELDS_DETECTED, total)
             val showToast = intent.getBooleanExtra(AutofillBridge.EXTRA_SHOW_TOAST, true)
             mainHandler.post {
                 restoreWidgetAfterFill()
                 if (showToast) {
-                    showAutofillToast(filled, total, fillable)
+                    showAutofillToast(filled, total, fillable, formFields)
                 }
             }
         }
@@ -115,12 +130,14 @@ class FloatingWidgetService : Service() {
         }
         mainHandler.removeCallbacks(refreshRunnable)
         scanExecutor.shutdownNow()
+        autofillScanExecutor.shutdownNow()
         widgetView?.let {
             try { windowManager.removeView(it) } catch (_: Exception) {}
         }
         widgetAttached = false
         panelView?.let { windowManager.removeView(it) }
         previewView?.let { windowManager.removeView(it) }
+        hideScanLoading()
         widgetView = null
         panelView = null
         previewView = null
@@ -273,8 +290,8 @@ class FloatingWidgetService : Service() {
             System.currentTimeMillis() - cacheTime < SCAN_CACHE_MS
 
         if (useCache && cachedJob != null) {
-            bindPanelContent(cachedJob!!)
             isScanning = false
+            bindPanelContent(cachedJob!!, cachedFormFieldCount)
             refreshJobInBackground()
             return
         }
@@ -286,11 +303,19 @@ class FloatingWidgetService : Service() {
             } else {
                 buildAccessibilityOffPosting()
             }
+            mainHandler.post {
+                if (isExpanded) {
+                    bindPanelContent(job, cachedFormFieldCount)
+                    showScanLoading("Counting form inputs…")
+                }
+            }
+            val formCount = scanFormFieldCount(forceRefresh = true)
             cachedJob = job
             cacheTime = System.currentTimeMillis()
             mainHandler.post {
-                if (isExpanded) bindPanelContent(job)
+                hideScanLoading()
                 isScanning = false
+                if (isExpanded) bindPanelContent(job, formCount)
             }
         }
     }
@@ -302,10 +327,21 @@ class FloatingWidgetService : Service() {
             cachedJob = job
             cacheTime = System.currentTimeMillis()
             mainHandler.post {
-                if (isExpanded) bindPanelContent(job)
+                if (isExpanded) bindPanelContent(job, cachedFormFieldCount)
                 currentJobPosting = job
             }
         }
+    }
+
+    /** Cached form-field count so the panel does not flicker between scans. */
+    private fun scanFormFieldCount(forceRefresh: Boolean): Int {
+        val accessibility = SpeedUpAccessibilityService.instance ?: return 0
+        if (!forceRefresh && System.currentTimeMillis() - formCacheTime < FORM_SCAN_CACHE_MS) {
+            return cachedFormFieldCount
+        }
+        cachedFormFieldCount = accessibility.countFormFieldsOnScreen()
+        formCacheTime = System.currentTimeMillis()
+        return cachedFormFieldCount
     }
 
     private fun showPanelShell() {
@@ -322,33 +358,59 @@ class FloatingWidgetService : Service() {
         wirePanelActions(null)
     }
 
-    private fun bindPanelContent(job: JobPosting) {
+    private fun bindPanelContent(job: JobPosting, formFieldCount: Int = cachedFormFieldCount) {
         currentJobPosting = job
         val li = LayoutInflater.from(this)
         val panel = panelView ?: return
 
-        panel.findViewById<TextView>(R.id.panel_job_title)?.text = job.title
-        panel.findViewById<TextView>(R.id.panel_job_subtitle)?.text =
-            buildString {
-                append(job.company)
-                if (job.location.isNotBlank() && job.location != "—") {
-                    append(" • ").append(job.location)
-                }
+        val showJd = job.jdDetected && !accessibilityOff
+        val showForm = formFieldCount > 0 && !accessibilityOff
+
+        panel.findViewById<View>(R.id.panel_jd_section)?.visibility =
+            if (showJd) View.VISIBLE else View.GONE
+        panel.findViewById<LinearLayout>(R.id.panel_analysis_container)?.visibility =
+            if (showJd) View.VISIBLE else View.GONE
+
+        panel.findViewById<LinearLayout>(R.id.panel_form_section)?.apply {
+            visibility = if (showForm) View.VISIBLE else View.GONE
+            if (showForm) {
+                findViewById<TextView>(R.id.panel_form_title)?.text = "Application form detected"
+                findViewById<TextView>(R.id.panel_form_subtitle)?.text =
+                    "$formFieldCount input field(s) on this page"
             }
-        panel.findViewById<ProgressBar>(R.id.panel_score_progress)?.apply {
-            isIndeterminate = false
-            progress = job.fitScore
         }
-        panel.findViewById<TextView>(R.id.panel_score_text)?.text = "${job.fitScore}%"
 
-        val fitLabel = panel.findViewById<TextView>(R.id.panel_fit_label)
-        val fitSubtitle = panel.findViewById<TextView>(R.id.panel_fit_subtitle)
-        fitLabel?.text = job.fitLabel.ifBlank { fitLabelForScore(job.fitScore) }
-        fitSubtitle?.text = job.fitSubtitle.ifBlank { fitSubtitleForScore(job) }
-        fitLabel?.setTextColor(fitLabelColor(job.fitScore))
+        if (showForm && !showJd) {
+            panel.findViewById<TextView>(R.id.panel_job_title)?.text = "Job application form"
+            panel.findViewById<TextView>(R.id.panel_job_subtitle)?.text =
+                "Tap Auto Fill to review and fill from your profile"
+        } else {
+            panel.findViewById<TextView>(R.id.panel_job_title)?.text = job.title
+            panel.findViewById<TextView>(R.id.panel_job_subtitle)?.text =
+                buildString {
+                    append(job.company)
+                    if (job.location.isNotBlank() && job.location != "—") {
+                        append(" • ").append(job.location)
+                    }
+                }
+        }
 
-        populateAnalysisPoints(li, job)
-        wirePanelActions(job)
+        if (showJd) {
+            panel.findViewById<ProgressBar>(R.id.panel_score_progress)?.apply {
+                isIndeterminate = false
+                progress = job.fitScore
+            }
+            panel.findViewById<TextView>(R.id.panel_score_text)?.text = "${job.fitScore}%"
+
+            val fitLabel = panel.findViewById<TextView>(R.id.panel_fit_label)
+            val fitSubtitle = panel.findViewById<TextView>(R.id.panel_fit_subtitle)
+            fitLabel?.text = job.fitLabel.ifBlank { fitLabelForScore(job.fitScore) }
+            fitSubtitle?.text = job.fitSubtitle.ifBlank { fitSubtitleForScore(job) }
+            fitLabel?.setTextColor(fitLabelColor(job.fitScore))
+            populateAnalysisPoints(li, job)
+        }
+
+        wirePanelActions(job, formFieldCount)
     }
 
     private fun applyPanelMaxHeight() {
@@ -356,6 +418,28 @@ class FloatingWidgetService : Service() {
         val maxScrollHeight = (resources.displayMetrics.heightPixels * 0.40f).toInt()
         scroll.layoutParams = (scroll.layoutParams as LinearLayout.LayoutParams).apply {
             height = maxScrollHeight
+        }
+    }
+
+    /**
+     * Cap the preview field list height so the "Fill" buttons below the scroll
+     * area always stay on screen, no matter how many fields were detected.
+     * Short lists keep wrap_content; long lists are clamped and become scrollable.
+     */
+    private fun applyPreviewMaxHeight() {
+        val scroll = previewView?.findViewById<NestedScrollView>(R.id.preview_scroll) ?: return
+        val maxScrollHeight = (resources.displayMetrics.heightPixels * 0.45f).toInt()
+        scroll.post {
+            val contentHeight = (scroll.getChildAt(0)?.height ?: 0)
+            val target = if (contentHeight in 1 until maxScrollHeight) {
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            } else {
+                maxScrollHeight
+            }
+            scroll.layoutParams = (scroll.layoutParams as LinearLayout.LayoutParams).apply {
+                height = target
+            }
+            scroll.requestLayout()
         }
     }
 
@@ -387,7 +471,7 @@ class FloatingWidgetService : Service() {
         }
     }
 
-    private fun wirePanelActions(job: JobPosting?) {
+    private fun wirePanelActions(job: JobPosting?, formFieldCount: Int = cachedFormFieldCount) {
         panelView?.findViewById<ImageButton>(R.id.btn_panel_close)?.setOnClickListener { collapsePanel() }
         panelView?.findViewById<Button>(R.id.btn_skip)?.setOnClickListener { collapsePanel() }
 
@@ -396,9 +480,15 @@ class FloatingWidgetService : Service() {
             autoFillBtn?.text = "Enable Accessibility Service"
             autoFillBtn?.setOnClickListener { openAccessibilitySettings() }
         } else {
-            autoFillBtn?.text = "⚡Auto Fill Form"
-            autoFillBtn?.isEnabled = !isScanning
-            autoFillBtn?.setOnClickListener { executeAutoFill(showToast = true) }
+            val baseText = if (formFieldCount > 0) "⚡ Auto Fill ($formFieldCount fields)" else "⚡ Auto Fill Form"
+            autoFillBtn?.text = "$baseText ($autoFillClickCount)"
+            autoFillBtn?.isEnabled = !isScanning && !isAutofillScanning
+            autoFillBtn?.setOnClickListener {
+                autoFillClickCount++
+                val newBaseText = if (formFieldCount > 0) "⚡ Auto Fill ($formFieldCount fields)" else "⚡ Auto Fill Form"
+                autoFillBtn.text = "$newBaseText ($autoFillClickCount)"
+                showFillPreview()
+            }
         }
 
         panelView?.findViewById<Button>(R.id.btn_view_analysis)?.apply {
@@ -573,9 +663,56 @@ class FloatingWidgetService : Service() {
             windowManager.removeView(it)
             previewView = null
         }
+        hideScanLoading()
         isExpanded = false
         isScanning = false
+        isAutofillScanning = false
         widgetView?.visibility = View.VISIBLE
+    }
+
+    private fun showScanLoading(message: String) {
+        hideScanLoading()
+        val li = LayoutInflater.from(this)
+        scanLoadingView = li.inflate(R.layout.overlay_scan_loading, null)
+        scanLoadingView?.findViewById<TextView>(R.id.tv_scan_loading_message)?.text = message
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayLayoutType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        windowManager.addView(scanLoadingView, params)
+    }
+
+    private fun hideScanLoading() {
+        scanLoadingView?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {
+            }
+            scanLoadingView = null
+        }
+    }
+
+    private fun setAutoFillButtonLoading(loading: Boolean, message: String? = null) {
+        val fillBtn = panelView?.findViewById<Button>(R.id.btn_auto_fill)
+        val spinner = panelView?.findViewById<ProgressBar>(R.id.progress_auto_fill)
+        if (loading) {
+            fillBtn?.isEnabled = false
+            fillBtn?.text = message ?: "Scanning form fields…"
+            spinner?.visibility = View.VISIBLE
+        } else {
+            fillBtn?.isEnabled = !isScanning
+            val baseText = if (cachedFormFieldCount > 0) {
+                "⚡ Auto Fill ($cachedFormFieldCount fields)"
+            } else {
+                "⚡ Auto Fill Form"
+            }
+            fillBtn?.text = "$baseText ($autoFillClickCount)"
+            spinner?.visibility = View.GONE
+        }
     }
 
     private fun showFillPreview() {
@@ -584,18 +721,50 @@ class FloatingWidgetService : Service() {
             Toast.makeText(this, "Enable Accessibility Service in Settings to auto-fill", Toast.LENGTH_LONG).show()
             return
         }
+        if (isAutofillScanning) {
+            Toast.makeText(this, "Already scanning form fields…", Toast.LENGTH_SHORT).show()
+            return
+        }
 
-        val fillBtn = panelView?.findViewById<Button>(R.id.btn_auto_fill)
-        fillBtn?.isEnabled = false
-        fillBtn?.text = "Scanning form fields…"
+        isAutofillScanning = true
+        setAutoFillButtonLoading(true)
+        showScanLoading("Reading form inputs…")
 
-        scanExecutor.execute {
-            val plan = accessibility.scanAndBuildFillPlan(repository)
+        autofillScanExecutor.execute {
+            var plan: FillPlan? = null
+            var timedOut = false
+            val scanWorker = Executors.newSingleThreadExecutor()
+            try {
+                val future = scanWorker.submit<FillPlan> {
+                    accessibility.scanAndBuildFillPlan(repository)
+                }
+                plan = future.get(AUTOFILL_SCAN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (e: TimeoutException) {
+                timedOut = true
+                android.util.Log.w("FloatingWidget", "scanAndBuildFillPlan timed out")
+            } catch (e: Exception) {
+                android.util.Log.e("FloatingWidget", "scanAndBuildFillPlan failed", e)
+            } finally {
+                scanWorker.shutdownNow()
+            }
             mainHandler.post {
-                if (!isExpanded) return@post
-                fillBtn?.isEnabled = true
-                fillBtn?.text = "⚡Auto Fill Form"
-                showFillPreviewUi(plan)
+                isAutofillScanning = false
+                hideScanLoading()
+                setAutoFillButtonLoading(false)
+                if (!isExpanded || panelView == null) return@post
+                when {
+                    timedOut -> Toast.makeText(
+                        this,
+                        "Scan took too long. Scroll the form into view and try again.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    plan == null -> Toast.makeText(
+                        this,
+                        "Couldn't read the form. Scroll to the application fields and try again.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    else -> showFillPreviewUi(plan!!)
+                }
             }
         }
     }
@@ -616,6 +785,7 @@ class FloatingWidgetService : Service() {
         )
         windowManager.addView(previewView, previewParams)
         setupDismissOnOutsideTouch(previewView, R.id.preview_card) { dismissPreview() }
+        applyPreviewMaxHeight()
 
         previewView?.findViewById<ImageButton>(R.id.btn_preview_close)?.setOnClickListener { dismissPreview() }
 
@@ -625,17 +795,24 @@ class FloatingWidgetService : Service() {
         fieldsContainer?.removeAllViews()
         missingContainer?.removeAllViews()
 
+        val inputCount = plan.fillable.size + plan.unknown.size
         previewView?.findViewById<TextView>(R.id.tv_preview_subtitle)?.text =
-            "${plan.fillable.size} fields matched from your profile"
+            "${plan.fillable.size} of $inputCount inputs matched • long-press to remap"
 
         for (item in plan.fillable) {
             val row = li.inflate(R.layout.item_fill_preview_field, fieldsContainer, false)
-            row.findViewById<TextView>(R.id.tv_field_label).text = item.detected.displayLabel()
+            val label = item.detected.displayLabel()
+            row.findViewById<TextView>(R.id.tv_field_label).text =
+                "$label (${item.detected.widgetType.name.lowercase()})"
             row.findViewById<TextView>(R.id.tv_field_value).text = truncateValue(item.value)
             val statusDot = row.findViewById<View>(R.id.view_field_status)
             statusDot.setBackgroundResource(
                 if (item.confidence >= 0.85f) R.drawable.bg_badge_success else R.drawable.bg_badge_warning
             )
+            row.setOnLongClickListener {
+                showCanonicalPicker(label, item.detected)
+                true
+            }
             fieldsContainer?.addView(row)
         }
 
@@ -651,13 +828,17 @@ class FloatingWidgetService : Service() {
         if (plan.unknown.isNotEmpty()) {
             missingLabel?.visibility = View.VISIBLE
             missingContainer?.visibility = View.VISIBLE
-            for (unknown in plan.unknown.take(3)) {
+            for (unknown in plan.unknown.take(5)) {
                 val row = li.inflate(R.layout.item_fill_preview_field, missingContainer, false)
-                row.findViewById<TextView>(R.id.tv_field_label).text =
-                    unknown.labelText.ifBlank { "Unknown field" }
-                row.findViewById<TextView>(R.id.tv_field_value).text = "Could not map to profile"
+                val label = unknown.labelText.ifBlank { "Unknown field" }
+                row.findViewById<TextView>(R.id.tv_field_label).text = label
+                row.findViewById<TextView>(R.id.tv_field_value).text = "Could not map — long-press to teach"
                 row.findViewById<View>(R.id.view_field_status)
                     .setBackgroundResource(R.drawable.bg_badge_warning)
+                row.setOnLongClickListener {
+                    showCanonicalPicker(label, unknown)
+                    true
+                }
                 missingContainer?.addView(row)
             }
         }
@@ -686,24 +867,24 @@ class FloatingWidgetService : Service() {
             } catch (_: Exception) { /* already removed */ }
         }
 
+        val accessibility = SpeedUpAccessibilityService.instance
+        if (accessibility == null) {
+            Toast.makeText(this, "Enable Accessibility Service in Settings to auto-fill", Toast.LENGTH_LONG).show()
+            restoreWidgetAfterFill()
+            return
+        }
+
         if (showToast) {
             Toast.makeText(this, "Filling form…", Toast.LENGTH_SHORT).show()
         }
 
-        // Cancel any previous restore timer before setting up a new one
         autofillRestoreRunnable?.let { mainHandler.removeCallbacks(it) }
         autofillRestoreRunnable = null
 
         scanExecutor.execute {
-            Thread.sleep(700)
-            sendBroadcast(
-                Intent(AutofillBridge.ACTION_REQUEST).apply {
-                    setPackage(packageName)
-                    putExtra(AutofillBridge.EXTRA_SHOW_TOAST, showToast)
-                }
-            )
-            // Post the fallback timer on the main thread to avoid racing
-            // with the broadcast result receiver (which also runs on main)
+            // Brief pause so overlay windows finish dismissing before the a11y tree scan
+            Thread.sleep(400)
+            accessibility.executeAutoFillRequest(repository, showToast)
             mainHandler.post {
                 val restoreFallback = Runnable {
                     restoreWidgetAfterFill()
@@ -733,18 +914,51 @@ class FloatingWidgetService : Service() {
         }
     }
 
-    private fun showAutofillToast(filledCount: Int, totalDetected: Int, fillableCount: Int) {
+    private fun showAutofillToast(filledCount: Int, totalDetected: Int, fillableCount: Int, formFieldsDetected: Int) {
         val message = when {
+            formFieldsDetected == 0 ->
+                "No fillable fields visible. Scroll to show all fields or try again."
+            filledCount > 0 && filledCount < fillableCount ->
+                "Filled $filledCount of $fillableCount fields on this page. " +
+                    "${fillableCount - filledCount} need dropdown/manual attention — tap Preview."
             filledCount > 0 ->
-                "Auto-filled $filledCount field(s) from your profile"
-            totalDetected == 0 ->
-                "No form fields found. Scroll to the application form and try again."
+                "Filled $filledCount field(s) on this page. Go to the next step and tap Auto Fill again."
             fillableCount > 0 ->
                 "Found $fillableCount fields but couldn't fill them. Tap a field in the form and retry."
+            totalDetected > 0 ->
+                "No fields matched your profile. Add more info in the Profile tab or long-press to remap."
             else ->
-                "No fields matched your profile. Add more info in the Profile tab."
+                "No form fields found. Scroll to the application form and try again."
         }
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun showCanonicalPicker(label: String, detected: DetectedField) {
+        val accessibility = SpeedUpAccessibilityService.instance
+        if (accessibility == null) {
+            Toast.makeText(this, "Accessibility service required to save mapping", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val options = CanonicalField.entries.filter { it != CanonicalField.UNKNOWN }
+        val names = options.map { it.displayName }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Map \"$label\" to")
+            .setItems(names) { _, which ->
+                val canonical = options[which]
+                accessibility.saveFieldCorrection(
+                    packageName = detected.packageName,
+                    viewId = detected.viewId.takeIf { it.isNotBlank() },
+                    label = detected.labelText.ifBlank { label },
+                    canonical = canonical,
+                    widgetType = detected.widgetType
+                )
+                Toast.makeText(
+                    this,
+                    "Saved as ${canonical.displayName} for this site",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .show()
     }
 
     private fun dismissPreview() {

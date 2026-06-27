@@ -7,5 +7,6 @@ object AutofillBridge {
     const val EXTRA_FILLED_COUNT = "filled_count"
     const val EXTRA_TOTAL_DETECTED = "total_detected"
     const val EXTRA_FILLABLE_COUNT = "fillable_count"
+    const val EXTRA_FORM_FIELDS_DETECTED = "form_fields_detected"
     const val EXTRA_MESSAGE = "message"
 }
