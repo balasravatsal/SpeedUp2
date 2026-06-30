@@ -74,7 +74,7 @@
             android:layout_height="wrap_content"
             android:gravity="center"
             android:paddingHorizontal="16dp"
-            android:text="Let Speed Up handle the tedious form filling for you"
+            android:text="See how well you match before you spend time applying"
             android:textColor="@color/text_muted"
             android:textSize="16sp" />
 
@@ -186,7 +186,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:gravity="center"
-                android:text="Speed Up needs accessibility permissions to auto-fill form fields and identify job postings."
+                android:text="Speed Up needs accessibility permissions to read job postings and analyze your fit."
                 android:textColor="@color/text_muted"
                 android:textSize="14sp"
                 android:layout_marginBottom="32dp" />

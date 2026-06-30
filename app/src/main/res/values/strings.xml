@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Speed Up</string>
-    <string name="accessibility_service_desc">Speed Up Accessibility Service helps auto-fill job application forms and detect job postings in real time.</string>
+    <string name="accessibility_service_desc">Speed Up reads job postings on screen and compares them to your profile for fit analysis.</string>
 </resources>

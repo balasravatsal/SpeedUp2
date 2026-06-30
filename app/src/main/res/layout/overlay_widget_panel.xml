@@ -86,36 +86,6 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
-                <!-- Form fill banner (independent of JD detection) -->
-                <LinearLayout
-                    android:id="@+id/panel_form_section"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
-                    android:background="@drawable/bg_badge_success"
-                    android:orientation="vertical"
-                    android:padding="12dp"
-                    android:visibility="gone">
-
-                    <TextView
-                        android:id="@+id/panel_form_title"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Application form detected"
-                        android:textColor="@color/text_primary"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/panel_form_subtitle"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="12 fields ready to fill on this page"
-                        android:textColor="@color/text_muted"
-                        android:textSize="13sp" />
-                </LinearLayout>
-
                 <!-- Fit Score Display -->
                 <LinearLayout
                     android:id="@+id/panel_jd_section"
@@ -184,42 +154,17 @@
         </androidx.core.widget.NestedScrollView>
 
         <!-- Actions — always visible below scroll area -->
-        <FrameLayout
-            android:layout_width="match_parent"
-            android:layout_height="50dp"
-            android:layout_marginTop="12dp">
-
-            <Button
-                android:id="@+id/btn_auto_fill"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@drawable/bg_gradient_primary_button"
-                android:backgroundTint="@null"
-                android:text="⚡ Auto Fill Form"
-                android:textColor="@color/white"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <ProgressBar
-                android:id="@+id/progress_auto_fill"
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:layout_gravity="center_vertical|end"
-                android:layout_marginEnd="18dp"
-                android:indeterminateTint="@color/white"
-                android:visibility="gone" />
-        </FrameLayout>
-
         <Button
             android:id="@+id/btn_view_analysis"
-            style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
+            android:layout_height="50dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_gradient_primary_button"
+            android:backgroundTint="@null"
             android:text="View Full Analysis"
-            android:textColor="@color/primary_purple"
-            app:strokeColor="@color/primary_purple"
-            app:strokeWidth="1.5dp" />
+            android:textColor="@color/white"
+            android:textSize="15sp"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/btn_skip"

@@ -35,7 +35,7 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="We'll use this to auto-fill job applications"
+        android:text="We'll use this to compare you against job requirements"
         android:textColor="@color/text_muted"
         android:textSize="14sp"
         app:layout_constraintEnd_toEndOf="parent"

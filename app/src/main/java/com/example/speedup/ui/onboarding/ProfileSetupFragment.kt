@@ -63,7 +63,7 @@ class ProfileSetupFragment : Fragment() {
     }
 
     private val stepTitles = listOf(
-        "Your personal info" to "We'll use this to auto-fill job applications",
+        "Your personal info" to "We'll use this to compare you against job requirements",
         "Work experience" to "Add your most recent role (optional but recommended)",
         "Education" to "Add your highest qualification",
         "Skills" to "Add skills to match against job descriptions",

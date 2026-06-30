@@ -20,8 +20,8 @@ class OnboardingFragment : Fragment() {
 
     private val slides = listOf(
         Slide(
-            "Your job search, on autopilot",
-            "Let Speed Up handle the tedious form filling for you",
+            "Your job search, smarter",
+            "See how well you match before you spend time applying",
             R.drawable.ic_zap
         ),
         Slide(
@@ -30,8 +30,8 @@ class OnboardingFragment : Fragment() {
             R.drawable.ic_target
         ),
         Slide(
-            "One tap. Every field. Done.",
-            "Floating widget with instant auto-fill for fast applications",
+            "One tap on any job page",
+            "Floating widget with instant fit score and skill breakdown",
             R.drawable.ic_wand
         )
     )

@@ -40,7 +40,7 @@
             android:foregroundServiceType="specialUse">
             <property 
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" 
-                android:value="Floating overlay interface for job fit analysis and automated form filling." />
+                android:value="Floating overlay for job fit analysis." />
         </service>
 
         <service
