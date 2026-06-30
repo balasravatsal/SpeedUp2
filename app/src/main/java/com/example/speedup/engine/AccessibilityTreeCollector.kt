@@ -20,27 +20,24 @@ class AccessibilityTreeCollector(private val service: AccessibilityService) {
         val dump: String,
         val nodeCount: Int,
         val sourcePackage: String?,
-        val formFields: List<ExtractedFormField>
+        val formFields: List<ExtractedFormField>,
+        val pageContext: PageGeometry.PageContext = PageGeometry.PageContext(0, 0, 0, false)
     )
 
     private var nodesVisited = 0
     private val extractedFields = LinkedHashMap<String, ExtractedFormField>()
     private var packageName = ""
     private var screenHeight = 0
+    private lateinit var pageContext: PageGeometry.PageContext
 
     fun capture(): TreeCaptureResult {
         nodesVisited = 0
         extractedFields.clear()
         val ownPackage = service.packageName
         screenHeight = service.resources.displayMetrics.heightPixels
-        val sb = StringBuilder()
+        val windowScanner = WindowScanner(service)
 
-        val targets = WindowScanner(service).findJobContentWindows()
-            .filter { it.packageName != ownPackage }
-
-        val target = targets.firstOrNull()
-            ?: WindowScanner(service).findBestContentWindowRoot()?.takeIf { it.packageName != ownPackage }
-
+        val target = resolveTarget(windowScanner, ownPackage)
         if (target == null) {
             return TreeCaptureResult(
                 dump = "No foreground content window found.",
@@ -52,25 +49,54 @@ class AccessibilityTreeCollector(private val service: AccessibilityService) {
 
         packageName = target.packageName
 
-        // Web forms: pair label TextViews with nearby inputs first
-        val labeled = BrowserLabelFieldScanner.collect(target.root, packageName, screenHeight)
+        // Normalize scroll position so document-Y is stable across captures
+        FormScrollNormalizer.scrollToTop(target.root)
+        Thread.sleep(280)
+
+        val freshTarget = resolveTarget(windowScanner, ownPackage) ?: target
+        packageName = freshTarget.packageName
+        pageContext = PageGeometry.buildContext(freshTarget.root, screenHeight, packageName)
+
+        val sb = StringBuilder()
+        sb.append("package: ").append(freshTarget.packageName).append('\n')
+        sb.append("page: viewportTop=").append(pageContext.contentViewportTopPx)
+            .append(" scrollOffset=").append(pageContext.scrollOffsetYAtCapture)
+            .append(if (pageContext.normalizedToTop) " (normalized)" else "")
+            .append('\n')
+        sb.append("nodes: (building…)\n\n")
+
+        val labeled = BrowserLabelFieldScanner.collect(freshTarget.root, packageName, screenHeight)
         for (item in labeled) {
             addExtractedField(item.input, item.label)
             item.input.recycle()
         }
 
-        sb.append("package: ").append(target.packageName).append('\n')
-        sb.append("nodes: (building…)\n\n")
-        appendNode(target.root, 0, sb)
+        appendNode(freshTarget.root, 0, sb)
 
         val dump = sb.toString().replace(
             "nodes: (building…)",
             "nodes: $nodesVisited"
         )
-        val fields = extractedFields.values
-            .sortedWith(compareBy({ if (it.topPx < 0) Int.MAX_VALUE else it.topPx }, { it.leftPx }))
-        Log.d(TAG, "Captured $nodesVisited nodes, ${fields.size} inputs from $packageName")
-        return TreeCaptureResult(dump, nodesVisited, target.packageName, fields)
+        val fields = extractedFields.values.sortedWith(
+            compareBy(
+                { if (it.documentTopPx < 0) Int.MAX_VALUE else it.documentTopPx },
+                { it.documentLeftPx }
+            )
+        )
+        Log.d(
+            TAG,
+            "Captured $nodesVisited nodes, ${fields.size} inputs from $packageName " +
+                "(viewportTop=${pageContext.contentViewportTopPx}, " +
+                "scrollOffset=${pageContext.scrollOffsetYAtCapture}, " +
+                "normalized=${pageContext.normalizedToTop})"
+        )
+        return TreeCaptureResult(dump, nodesVisited, freshTarget.packageName, fields, pageContext)
+    }
+
+    private fun resolveTarget(windowScanner: WindowScanner, ownPackage: String): WindowScanner.WindowTarget? {
+        val targets = windowScanner.findJobContentWindows().filter { it.packageName != ownPackage }
+        return targets.firstOrNull()
+            ?: windowScanner.findBestContentWindowRoot()?.takeIf { it.packageName != ownPackage }
     }
 
     private fun appendNode(node: AccessibilityNodeInfo?, depth: Int, sb: StringBuilder) {
@@ -151,7 +177,9 @@ class AccessibilityTreeCollector(private val service: AccessibilityService) {
             matchSource = matchSource,
             topPx = bounds.top,
             leftPx = bounds.left,
-            heightPx = bounds.height()
+            heightPx = bounds.height(),
+            documentTopPx = PageGeometry.toDocumentY(bounds.top, pageContext),
+            documentLeftPx = PageGeometry.toDocumentX(bounds.left, pageContext)
         )
     }
 

@@ -11,6 +11,7 @@ object PageGeometry {
     data class PageContext(
         /** Top edge of the scrollable content viewport on screen. */
         val contentViewportTopPx: Int,
+        val contentViewportLeftPx: Int,
         /** Estimated page scroll offset at capture time (0 when normalized to top). */
         val scrollOffsetYAtCapture: Int,
         /** True when the page was scrolled to (or already near) the top before measuring. */
@@ -22,8 +23,7 @@ object PageGeometry {
         var bestArea = 0
         walk(root) { node ->
             if (!node.isScrollable) return@walk
-            val bounds = Rect()
-            node.getBoundsInScreen(bounds)
+            val bounds = boundsOf(node)
             val area = bounds.width() * bounds.height()
             if (area > bestArea) {
                 bestArea = area
@@ -43,6 +43,7 @@ object PageGeometry {
             scrollRoot.recycle()
             return PageContext(
                 contentViewportTopPx = viewport.top,
+                contentViewportLeftPx = viewport.left,
                 scrollOffsetYAtCapture = if (normalized) 0 else offset,
                 normalizedToTop = normalized
             )
@@ -55,6 +56,7 @@ object PageGeometry {
         }
         return PageContext(
             contentViewportTopPx = fallbackTop,
+            contentViewportLeftPx = 0,
             scrollOffsetYAtCapture = 0,
             normalizedToTop = false
         )
@@ -68,8 +70,8 @@ object PageGeometry {
         return screenTop - ctx.contentViewportTopPx + ctx.scrollOffsetYAtCapture
     }
 
-    fun toDocumentX(screenLeft: Int, contentViewportLeftPx: Int): Int {
-        return screenLeft - contentViewportLeftPx
+    fun toDocumentX(screenLeft: Int, ctx: PageContext): Int {
+        return screenLeft - ctx.contentViewportLeftPx
     }
 
     fun estimateScrollOffsetY(scrollRoot: AccessibilityNodeInfo): Int {
@@ -100,7 +102,7 @@ object PageGeometry {
         return rect
     }
 
-    private inline fun walk(node: AccessibilityNodeInfo, visit: (AccessibilityNodeInfo) -> Unit) {
+    private fun walk(node: AccessibilityNodeInfo, visit: (AccessibilityNodeInfo) -> Unit) {
         visit(node)
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue

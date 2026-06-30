@@ -97,10 +97,15 @@ class JobFitAnalysisActivity : AppCompatActivity() {
                 hintView.visibility = View.GONE
             }
             val positionView = row.findViewById<TextView>(R.id.tv_field_position)
-            if (field.topPx >= 0) {
+            if (field.documentTopPx >= 0 || field.topPx >= 0) {
                 positionView.text = buildString {
-                    append("↕ ").append(field.topPx).append("px from top")
-                    if (field.leftPx >= 0) append(" · ← ").append(field.leftPx).append("px")
+                    if (field.documentTopPx >= 0) {
+                        append("page ").append(field.documentTopPx).append("px")
+                    }
+                    if (field.topPx >= 0) {
+                        if (field.documentTopPx >= 0) append(" · ")
+                        append("screen ").append(field.topPx).append("px")
+                    }
                     if (field.heightPx > 0) append(" · h ").append(field.heightPx).append("px")
                 }
                 positionView.visibility = View.VISIBLE
@@ -117,8 +122,16 @@ class JobFitAnalysisActivity : AppCompatActivity() {
         val pkg = ScanResultCache.sourcePackage
         val fieldCount = ScanResultCache.formFields.size
 
+        val pageMeta = when {
+            ScanResultCache.pageNormalizedToTop -> "page coords normalized"
+            ScanResultCache.scrollOffsetYAtCapture > 0 ->
+                "scroll offset ${ScanResultCache.scrollOffsetYAtCapture}px"
+            else -> null
+        }
         binding.tvTreeMeta.text = when {
             dump.isBlank() -> "No accessibility tree cached from the last scan."
+            pkg != null && pageMeta != null ->
+                "$nodes nodes · $fieldCount inputs · $pkg · $pageMeta"
             pkg != null -> "$nodes nodes · $fieldCount inputs · $pkg"
             else -> "$nodes nodes · $fieldCount inputs"
         }

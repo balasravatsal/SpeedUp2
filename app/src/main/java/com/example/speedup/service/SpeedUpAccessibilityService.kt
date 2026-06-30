@@ -65,15 +65,29 @@ class SpeedUpAccessibilityService : AccessibilityService() {
     }
 
     fun scanAndCompareJob(repository: ProfileRepository): JobPosting {
-        cacheAccessibilityTree()
+        // Read JD from the current viewport before scroll-to-top for field capture
         val collection = screenTextCollector.collect()
         Log.d(TAG, "JD scan: ${collection.texts.size} blocks from ${collection.sourcePackage}")
+        cacheAccessibilityTree()
         return JobFitAnalyzer.analyze(collection.texts, repository)
     }
 
     private fun cacheAccessibilityTree() {
         val tree = AccessibilityTreeCollector(this).capture()
-        ScanResultCache.update(tree.dump, tree.nodeCount, tree.sourcePackage, tree.formFields)
-        Log.d(TAG, "Tree cached: ${tree.nodeCount} nodes, ${tree.formFields.size} inputs from ${tree.sourcePackage}")
+        val ctx = tree.pageContext
+        ScanResultCache.update(
+            dump = tree.dump,
+            nodes = tree.nodeCount,
+            packageName = tree.sourcePackage,
+            fields = tree.formFields,
+            contentViewportTop = ctx.contentViewportTopPx,
+            scrollOffsetY = ctx.scrollOffsetYAtCapture,
+            normalizedToTop = ctx.normalizedToTop
+        )
+        Log.d(
+            TAG,
+            "Tree cached: ${tree.nodeCount} nodes, ${tree.formFields.size} inputs from ${tree.sourcePackage} " +
+                "(doc positions, normalized=${ctx.normalizedToTop})"
+        )
     }
 }
