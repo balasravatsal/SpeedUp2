@@ -111,6 +111,7 @@ class FloatingWidgetService : Service() {
         if (!repository.isProfileSetupCompleted() || isExpanded) return
         val accessibility = SpeedUpAccessibilityService.instance ?: return
         scanExecutor.execute {
+            val accessibility = SpeedUpAccessibilityService.instance ?: return@execute
             val job = accessibility.scanAndCompareJob(repository)
             cachedJob = job
             cacheTime = System.currentTimeMillis()

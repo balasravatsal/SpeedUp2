@@ -5,6 +5,8 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import com.example.speedup.data.model.JobPosting
 import com.example.speedup.data.repository.ProfileRepository
+import com.example.speedup.data.repository.ScanResultCache
+import com.example.speedup.engine.AccessibilityTreeCollector
 import com.example.speedup.engine.JobFitAnalyzer
 import com.example.speedup.engine.ScreenTextCollector
 import com.example.speedup.engine.SemanticMatcher
@@ -63,8 +65,15 @@ class SpeedUpAccessibilityService : AccessibilityService() {
     }
 
     fun scanAndCompareJob(repository: ProfileRepository): JobPosting {
+        cacheAccessibilityTree()
         val collection = screenTextCollector.collect()
         Log.d(TAG, "JD scan: ${collection.texts.size} blocks from ${collection.sourcePackage}")
         return JobFitAnalyzer.analyze(collection.texts, repository)
+    }
+
+    private fun cacheAccessibilityTree() {
+        val tree = AccessibilityTreeCollector(this).capture()
+        ScanResultCache.update(tree.dump, tree.nodeCount, tree.sourcePackage, tree.formFields)
+        Log.d(TAG, "Tree cached: ${tree.nodeCount} nodes, ${tree.formFields.size} inputs from ${tree.sourcePackage}")
     }
 }
